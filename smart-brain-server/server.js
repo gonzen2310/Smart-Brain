@@ -2,106 +2,101 @@ const express = require('express');
 const bodyParser = require('body-parser');
 const app = express();
 const bcrypt = require('bcrypt-nodejs');
+const cors = require('cors');
+const knex = require('knex');
+
+const DBpostgre = knex({
+    client: 'pg',
+    connection: {
+        host : '127.0.0.1',
+        user : 'postgres',
+        password : 'gonzalo2310',
+        database : 'smart-brain'
+    }
+});
 
 app.use(bodyParser.json());
-
-const DB = {
-    users: [
-        {
-            id: '123',
-            name: 'Gonzalo',
-            email: 'gonzalo@gmail.com',
-            entries: 0,
-            joined: new Date()
-        },
-        {
-            id: '1234',
-            name: 'Hector',
-            email: 'hector@gmail.com',
-            entries: 0,
-            joined: new Date()
-        }
-    ],
-    login: [
-        {
-            id: '2310',
-            hash: '',
-            email: 'gonzalo@gmail.com'
-        }
-    ]
-};
+app.use(cors());
 
 app.get('/', (req, res) => {
-    res.send(DB.users);
+    res.redirect('/signin');
 });
 
 // SIGN IN
 app.post('/signin', (req, res) => {
-    bcrypt.compare("B4c0/\/", hash, function(err, res) {
-        // res === true
-    });
-    bcrypt.compare("not_bacon", hash, function(err, res) {
-        // res === false
-    });
-
-    if (req.body.email === DB.users[0].email &&
-        req.body.password === DB.users[0].password) {
-        res.json('signing');
-    }
-    else {
-        res.status(400).json('error logging in');
-    }
+    DBpostgre.select('email', 'hash').from('login')
+        .where('email', '=', req.body.email)
+        .then(data => {
+            const isValid = bcrypt.compareSync(req.body.password, data[0].hash);
+            if (isValid) {
+                return DBpostgre.select('*').from('users')
+                    .where('email', '=', req.body.email)
+                    .then(user => {
+                        res.json(user[0]);
+                    })
+                    .catch(err => status(400).json("unable to get user"));
+            }
+            else {
+                res.status(400).json("Wrong credentials")
+            }
+        })
+        .catch(err => status(400).json("Wrong credentials"));
 });
 
 // REGISTER
 app.post('/register', (req, res) => {
     const { email, name, password} = req.body;
-    bcrypt.hash(password, null, null, function(err, hash) {
-        // Store hash in your password DB.
-        console.log(hash);
-    });
-
-    DB.users.push(
-        {
-            id: '125',
-            name: name,
-            email: email,
-            password: password,
-            entries: 0,
-            joined: new Date()
-        }
-    );
-    res.json(DB.users[(DB.users.length) - 1]);
+    const hash = bcrypt.hashSync(password);
+        DBpostgre.transaction(trx => {
+            // transaction when you have to do more than two things at once
+            trx.insert({
+                hash: hash,
+                email: email
+            })
+                .into('login')
+                .returning('email')
+                .then(loginEmail => {
+                    return trx('users')
+                        .returning('*')
+                        .insert({
+                            email: loginEmail[0],
+                            name: name,
+                            joined: new Date()
+                        }).then(user => {
+                            res.json(user[0]);
+                        })
+                })
+                .then(trx.commit)
+                .catch(trx.rollback)
+        })
+        .catch(err => res.status(400).json('Unable to register'));
 });
 
 // PROFILE
 app.get('/profile/:id', (req, res) => {
     const { id } = req.params;
-    let found = false;
-    DB.users.forEach(user => {
-        if (user.id === id) {
-            found = true;
-            return res.json(user);
-        }
-    });
-    if (!found) {
-        res.status(400).json("not found");
-    }
+    DBpostgre.select('*').from('users').where({id})
+        .then(user => {
+            if (user.length) {
+                res.json(user)
+            }
+            else {
+                res.status(400).json('Not found')
+            }
+        })
+        .catch(err => res.status(400).json('Not found'));
 });
 
 // IMAGE COUNTER
-app.post('/image', (req, res) => {
+app.put('/image', (req, res) => {
     const { id } = req.body;
-    let found = false;
-    DB.users.forEach(user => {
-        if (user.id === id) {
-            user.entries++;
-            return res.json(user.entries);
-        }
-    });
-    if (!found) {
-        res.status(400).json("not found");
-    }
+    DBpostgre('users').where('id', '=', id)
+        .increment('entries', 1)
+        .returning('entries')
+        .then(entries => {
+            res.json(entries[0]);
+        })
+        .catch(err => res.status(400).json('unable to get entries'))
 });
 
 // BCRYPT
